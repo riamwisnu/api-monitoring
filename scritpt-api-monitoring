@@ -1,0 +1,183 @@
+#!/bin/bash
+set -e
+
+echo "[+] SOC ALL-IN-ONE INSTALLER"
+
+# =============================
+# 1. INSTALL DOCKER
+# =============================
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[+] Installing Docker..."
+  apt update
+  apt install -y ca-certificates curl gnupg lsb-release
+
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable docker
+  systemctl start docker
+else
+  echo "[✓] Docker already installed"
+fi
+
+# =============================
+# 2. INSTALL DOCKER COMPOSE
+# =============================
+if ! docker compose version >/dev/null 2>&1; then
+  echo "[+] Installing Docker Compose plugin..."
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -SL https://github.com/docker/compose/releases/download/v2.25.0/docker-compose-linux-x86_64 \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+else
+  echo "[✓] Docker Compose already installed"
+fi
+
+# =============================
+# 3. CREATE WORKDIR
+# =============================
+WORKDIR=/opt/soc-stack
+mkdir -p $WORKDIR/reports
+cd $WORKDIR
+
+# =============================
+# 4. GENERATE DOCKER-COMPOSE
+# =============================
+cat <<'EOF' > docker-compose.yml
+version: "3.9"
+
+networks:
+  soc:
+    driver: bridge
+
+services:
+
+  kong:
+    image: kong:3.6
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong.yml
+    command: >
+      sh -c "
+      cat <<CFG >/kong.yml
+      _format_version: '3.0'
+      services:
+        - name: api
+          url: http://httpbin.org
+          routes:
+            - paths: [/api]
+      CFG
+      && kong docker-start
+      "
+    ports: ["8000:8000","8001:8001"]
+    networks: [soc]
+
+  graylog:
+    image: graylog/graylog:5.2
+    environment:
+      GRAYLOG_PASSWORD_SECRET: secret
+      GRAYLOG_ROOT_PASSWORD_SHA2: 8c6976e5b5410415bde908bd4dee15dfb16
+      GRAYLOG_HTTP_EXTERNAL_URI: http://localhost:9000/
+    ports: ["9000:9000","12201:12201/udp"]
+    networks: [soc]
+
+  wazuh:
+    image: wazuh/wazuh-manager:4.7.0
+    ports: ["1514:1514"]
+    networks: [soc]
+
+  honeypot:
+    image: cowrie/cowrie
+    ports: ["2222:2222"]
+    networks: [soc]
+
+  misp:
+    image: harvarditsecurity/misp
+    ports: ["8080:80"]
+    networks: [soc]
+
+  opencti:
+    image: opencti/platform:latest
+    environment:
+      OPENCTI_ADMIN_TOKEN: changeme
+    ports: ["8081:8080"]
+    networks: [soc]
+
+  thehive:
+    image: strangebee/thehive:5
+    ports: ["9001:9000"]
+    networks: [soc]
+
+  cortex:
+    image: thehiveproject/cortex
+    ports: ["9002:9001"]
+    networks: [soc]
+
+  prometheus:
+    image: prom/prometheus
+    ports: ["9090:9090"]
+    networks: [soc]
+
+  grafana:
+    image: grafana/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports: ["3000:3000"]
+    networks: [soc]
+
+  clamav:
+    image: clamav/clamav
+    networks: [soc]
+
+  yara:
+    image: securitykitty/yara
+    networks: [soc]
+
+  soc-reporter:
+    image: alpine
+    volumes:
+      - ./reports:/reports
+    networks: [soc]
+    entrypoint: >
+      sh -c "
+      apk add --no-cache curl jq bash &&
+      echo '0 1 * * * /report.sh' | crontab - &&
+      cat <<RS >/report.sh
+      #!/bin/bash
+      DATE=\$(date +%F)
+      OUT=/reports/daily-report-\$DATE.html
+      API=\$(curl -s -u admin:admin http://graylog:9000/api/search/universal/relative?query=source:kong\\&range=86400 | jq .total_results)
+      HP=\$(curl -s -u admin:admin http://graylog:9000/api/search/universal/relative?query=honeypot\\&range=86400 | jq .total_results)
+      TI=\$(curl -s -u admin:admin http://graylog:9000/api/search/universal/relative?query=misp\\&range=86400 | jq .total_results)
+      cat <<HTML > \$OUT
+      <html><body>
+      <h1>Daily SOC Report \$DATE</h1>
+      <ul>
+        <li>API Requests: \$API</li>
+        <li>Honeypot Attacks: \$HP</li>
+        <li>Threat Intel Hits: \$TI</li>
+      </ul>
+      </body></html>
+      HTML
+      RS
+      chmod +x /report.sh &&
+      crond -f
+      "
+EOF
+
+# =============================
+# 5. START STACK
+# =============================
+echo "[+] Starting SOC Stack..."
+docker compose up -d
+
+echo "====================================="
+echo " SOC STACK READY"
+echo "====================================="
+echo "Kong API    : http://localhost:8000/api"
+echo "Grafana     : http://localhost:3000 (admin/admin)"
+echo "Graylog     : http://localhost:9000"
+echo "TheHive     : http://localhost:9001"
+echo "Cortex      : http://localhost:9002"
+echo "MISP        : http://localhost:8080"
+echo "OpenCTI     : http://localhost:8081"
+echo "Reports dir : /opt/soc-stack/reports"
+echo "====================================="
