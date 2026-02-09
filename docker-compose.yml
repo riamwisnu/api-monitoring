@@ -1,0 +1,136 @@
+version: "3.9"
+
+networks:
+  soc-net:
+    driver: bridge
+
+volumes:
+  graylog_data:
+  prometheus_data:
+  grafana_data:
+  wazuh_data:
+  opencti_data:
+  thehive_data:
+  kong_data:
+
+services:
+
+  kong:
+    image: kong:3.6
+    container_name: kong
+    networks: [soc-net]
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+    volumes:
+      - kong_data:/kong
+    command: >
+      sh -c "
+      printf '%s\n' \
+      '_format_version: \"3.0\"' \
+      'services:' \
+      '  - name: banking-api' \
+      '    url: http://httpbin.org' \
+      '    routes:' \
+      '      - name: api-route' \
+      '        paths:' \
+      '          - /api' \
+      > /kong/kong.yml
+      && kong docker-start
+      "
+
+  wazuh:
+    image: wazuh/wazuh-manager:4.7.2
+    container_name: wazuh
+    networks: [soc-net]
+    volumes:
+      - wazuh_data:/var/ossec/data
+    ports:
+      - "1514:1514/udp"
+      - "55000:55000"
+
+  graylog:
+    image: graylog/graylog:5.2
+    container_name: graylog
+    networks: [soc-net]
+    environment:
+      GRAYLOG_PASSWORD_SECRET: changeme
+      GRAYLOG_ROOT_PASSWORD_SHA2: 8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918
+      GRAYLOG_HTTP_EXTERNAL_URI: http://127.0.0.1:9000/
+    volumes:
+      - graylog_data:/usr/share/graylog/data
+    ports:
+      - "9000:9000"
+      - "12201:12201/udp"
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    networks: [soc-net]
+    volumes:
+      - prometheus_data:/prometheus
+    command: >
+      --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    networks: [soc-net]
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+  opencti:
+    image: opencti/platform:5.12.23
+    container_name: opencti
+    networks: [soc-net]
+    environment:
+      APP__PORT: 8080
+      APP__ADMIN__EMAIL: admin@bank.local
+      APP__ADMIN__PASSWORD: admin
+    volumes:
+      - opencti_data:/data
+    ports:
+      - "8080:8080"
+
+  thehive:
+    image: strangebee/thehive:5.2
+    container_name: thehive
+    networks: [soc-net]
+    volumes:
+      - thehive_data:/data
+    ports:
+      - "9001:9000"
+
+  yara:
+    image: alpine
+    container_name: yara
+    networks: [soc-net]
+    command: >
+      sh -c "
+      apk add --no-cache yara curl &&
+      while true; do
+        echo '[YARA] waiting for feeds...'
+        sleep 3600
+      done
+      "
+
+  soar-orchestrator:
+    image: alpine
+    container_name: soar
+    networks: [soc-net]
+    command: >
+      sh -c "
+      echo '[SOAR] approval workflow engine started'
+      && sleep infinity
+      "
