@@ -79,7 +79,7 @@ services:
         jq -r '.messages[].message.source_ip' |
         sort -u |
         while read ip; do
-          ipset add bank_ip \$ip timeout 86400 -exist >/dev/null 2>&1
+          ipset add bank_ip $$ip timeout 86400 -exist >/dev/null 2>&1
         done
         sleep 60
       done
