@@ -1,4 +1,22 @@
 #!/bin/bash
+############################################
+# APT LOCK HANDLING (UBUNTU SAFE)
+# Prevent dpkg lock error from unattended-upgrades
+############################################
+
+echo "[*] Checking apt/dpkg lock..."
+
+APT_LOCKS=(
+  "/var/lib/dpkg/lock"
+  "/var/lib/dpkg/lock-frontend"
+  "/var/lib/apt/lists/lock"
+)
+
+for lock in "${APT_LOCKS[@]}"; do
+  while sudo fuser "$lock" >/dev/null 2>&1; do
+    echo "[!] Waiting for apt lock: $lock (unattended-upgrades running)"
+
+
 set -e
 
 ########################################################
