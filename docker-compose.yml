@@ -1,136 +1,85 @@
 version: "3.9"
 
 networks:
-  soc-net:
-    driver: bridge
+  soc-net: {}
 
 volumes:
-  graylog_data:
-  prometheus_data:
-  grafana_data:
-  wazuh_data:
-  opencti_data:
-  thehive_data:
   kong_data:
+  graylog_data:
+  grafana_data:
 
 services:
 
   kong:
     image: kong:3.6
-    container_name: kong
     networks: [soc-net]
-    ports:
-      - "8000:8000"
-      - "8001:8001"
+    ports: ["8000:8000","8001:8001"]
     environment:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /kong/kong.yml
-      KONG_PROXY_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
-      KONG_PROXY_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_PLUGINS: bundled,coraza
     volumes:
       - kong_data:/kong
     command: >
       sh -c "
+      apk add --no-cache git &&
+      git clone https://github.com/coreruleset/coreruleset /crs &&
       printf '%s\n' \
       '_format_version: \"3.0\"' \
       'services:' \
-      '  - name: banking-api' \
+      '  - name: api' \
       '    url: http://httpbin.org' \
       '    routes:' \
-      '      - name: api-route' \
-      '        paths:' \
+      '      - paths:' \
       '          - /api' \
+      'plugins:' \
+      '  - name: coraza' \
+      '    config:' \
+      '      rules:' \
+      '        - SecRuleEngine On' \
+      '        - Include /crs/crs-setup.conf.example' \
+      '        - Include /crs/rules/*.conf' \
       > /kong/kong.yml
       && kong docker-start
       "
 
-  wazuh:
-    image: wazuh/wazuh-manager:4.7.2
-    container_name: wazuh
-    networks: [soc-net]
-    volumes:
-      - wazuh_data:/var/ossec/data
-    ports:
-      - "1514:1514/udp"
-      - "55000:55000"
-
   graylog:
     image: graylog/graylog:5.2
-    container_name: graylog
     networks: [soc-net]
     environment:
-      GRAYLOG_PASSWORD_SECRET: changeme
+      GRAYLOG_PASSWORD_SECRET: secret
       GRAYLOG_ROOT_PASSWORD_SHA2: 8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918
       GRAYLOG_HTTP_EXTERNAL_URI: http://127.0.0.1:9000/
     volumes:
       - graylog_data:/usr/share/graylog/data
-    ports:
-      - "9000:9000"
-      - "12201:12201/udp"
-
-  prometheus:
-    image: prom/prometheus
-    container_name: prometheus
-    networks: [soc-net]
-    volumes:
-      - prometheus_data:/prometheus
-    command: >
-      --storage.tsdb.path=/prometheus
-    ports:
-      - "9090:9090"
+    ports: ["9000:9000","12201:12201/udp"]
 
   grafana:
     image: grafana/grafana
-    container_name: grafana
     networks: [soc-net]
     volumes:
       - grafana_data:/var/lib/grafana
-    ports:
-      - "3000:3000"
-
-  opencti:
-    image: opencti/platform:5.12.23
-    container_name: opencti
-    networks: [soc-net]
+      - ./dashboards:/var/lib/grafana/dashboards
     environment:
-      APP__PORT: 8080
-      APP__ADMIN__EMAIL: admin@bank.local
-      APP__ADMIN__PASSWORD: admin
-    volumes:
-      - opencti_data:/data
-    ports:
-      - "8080:8080"
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/executive-risk.json
+    ports: ["3000:3000"]
 
-  thehive:
-    image: strangebee/thehive:5.2
-    container_name: thehive
-    networks: [soc-net]
-    volumes:
-      - thehive_data:/data
-    ports:
-      - "9001:9000"
-
-  yara:
+  auto-blocker:
     image: alpine
-    container_name: yara
+    privileged: true
     networks: [soc-net]
+    volumes:
+      - /sbin/ipset:/sbin/ipset
     command: >
       sh -c "
-      apk add --no-cache yara curl &&
+      apk add --no-cache curl jq &&
       while true; do
-        echo '[YARA] waiting for feeds...'
-        sleep 3600
+        curl -s -u admin:admin http://graylog:9000/api/search/universal/relative?query=coraza\\&range=300 |
+        jq -r '.messages[].message.source_ip' |
+        sort -u |
+        while read ip; do
+          ipset add bank_ip \$ip timeout 86400 -exist >/dev/null 2>&1
+        done
+        sleep 60
       done
-      "
-
-  soar-orchestrator:
-    image: alpine
-    container_name: soar
-    networks: [soc-net]
-    command: >
-      sh -c "
-      echo '[SOAR] approval workflow engine started'
-      && sleep infinity
-      "
