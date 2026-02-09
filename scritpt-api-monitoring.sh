@@ -1,4 +1,6 @@
 #!/bin/bash
+set -e
+
 ############################################
 # APT LOCK HANDLING (UBUNTU SAFE)
 # Prevent dpkg lock error from unattended-upgrades
@@ -15,9 +17,17 @@ APT_LOCKS=(
 for lock in "${APT_LOCKS[@]}"; do
   while sudo fuser "$lock" >/dev/null 2>&1; do
     echo "[!] Waiting for apt lock: $lock (unattended-upgrades running)"
+    sleep 5
+  done
+done
 
+# Extra safety: ensure dpkg is not half-configured
+if dpkg --audit | grep -q .; then
+  echo "[!] dpkg interrupted previously, fixing..."
+  sudo dpkg --configure -a
+fi
 
-set -e
+echo "[✓] Apt lock cleared, continuing installation"
 
 ########################################################
 # =============== CONFIGURATION ========================
